@@ -1,13 +1,9 @@
-// ESM + JSON-RPC MCP endpoint (działa w Builderze OpenAI)
-// Używa ENV: WOO_<TENANT>_(URL|KEY|SECRET), np. WOO_SHOP1_URL/KEY/SECRET
-
 export default async function handler(req, res) {
-  // CORS zgodny z tym, co Ci działało
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, OpenAI-Organization, OpenAI-Project, Origin"
+    "Content-Type, Authorization, OpenAI-Organization, OpenAI-Project, Origin, x-openai-*"
   );
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
@@ -20,14 +16,13 @@ export default async function handler(req, res) {
   const { id, method, params } = body || {};
 
   try {
-    // ===== TENANTS z ENV =====
     const tenants = readTenants();
     const tenantNames = Object.keys(tenants);
+
     const tools = [
       {
         name: "getOrderDetails",
         description: "Zwraca dane zamówienia WooCommerce po ID/num., weryfikuje email.",
-        // Uwaga: inputSchema (camelCase) — tak oczekuje Builder
         inputSchema: {
           $schema: "https://json-schema.org/draft/2020-12/schema",
           type: "object",
@@ -42,12 +37,11 @@ export default async function handler(req, res) {
       }
     ];
 
-    // ===== MCP JSON-RPC =====
     if (method === "initialize") {
       return send(id, {
         protocolVersion: "2025-06-18",
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "woo-mcp", version: "1.0.0" }
+        serverInfo: { name: "woo-mcp", version: "1.0.1" }
       });
     }
 
@@ -59,14 +53,10 @@ export default async function handler(req, res) {
       const name = params?.name;
       const args = params?.arguments ?? {};
 
-      if (name !== "getOrderDetails") {
-        return sendErr(id, -32601, "Unknown tool");
-      }
+      if (name !== "getOrderDetails") return sendErr(id, -32601, "Unknown tool");
 
       const { tenant, orderRef, email } = args || {};
-      if (!tenant || !orderRef || !email) {
-        return sendErr(id, -32602, "tenant, orderRef i email są wymagane");
-      }
+      if (!tenant || !orderRef || !email) return sendErr(id, -32602, "tenant, orderRef i email są wymagane");
 
       try {
         const result = await getOrderDetailsWoo(tenants, {
@@ -75,8 +65,9 @@ export default async function handler(req, res) {
           email: String(email)
         });
 
+        // 🔑 Builder bywa wrażliwy – zwracamy TEXT, nie {type:"json"}
         return send(id, {
-          content: [{ type: "json", json: result }],
+          content: [{ type: "text", text: JSON.stringify(result) }],
           isError: false
         });
       } catch (e) {
@@ -97,12 +88,10 @@ export default async function handler(req, res) {
   }
 }
 
-/* ---------------- helpers ---------------- */
-
+/* -------- helpers -------- */
 function safeJson(s) { try { return JSON.parse(s || "{}"); } catch { return {}; } }
 
 function readTenants() {
-  // WOO_<TENANT>_(URL|KEY|SECRET)  -> nazwy tenantów w lowercase
   const map = {};
   for (const [k, v] of Object.entries(process.env)) {
     const m = k.match(/^WOO_([A-Z0-9_]+)_(URL|KEY|SECRET)$/);
@@ -151,7 +140,11 @@ function wcUrl(cfg, path, qs = {}) {
 }
 
 async function mustFetch(url) {
-  const r = await fetch(url, { headers: { Accept: "application/json" } });
+  const r = await fetch(url, {
+    headers: { Accept: "application/json" },
+    // ⏱️ twardy timeout, żeby nie wywaliło 424 w Builderze
+    signal: AbortSignal.timeout(25000)
+  });
   if (!r.ok) throw new Error(`Woo HTTP ${r.status}`);
   return r.json();
 }
