@@ -1,32 +1,37 @@
 // api/mcp/index.js
-const TOOLS = [/* …twoja definicja getOrderDetails… */];
-
-function setCORS(res, methods) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', methods.join(','));
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-}
-
 export default function handler(req, res) {
-  setCORS(res, ['GET','HEAD','OPTIONS']);
+  // CORS
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-  if (req.method === 'OPTIONS') return res.status(204).end();
-  if (req.method === 'HEAD')    return res.status(200).end();
-
-  const payload = { mcp_version: '1.0', tools: TOOLS };
-
-  // Fallback: niektóre hosty proszą o SSE
-  if ((req.headers.accept || '').includes('text/event-stream')) {
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    });
-    res.write(`event: mcp_list_tools\n`);
-    res.write(`data: ${JSON.stringify({ tools: TOOLS })}\n\n`);
-    return res.end();
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+  if (req.method !== 'GET') {
+    return res.status(405).json({ error: 'method_not_allowed' });
   }
 
-  res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  return res.status(200).json(payload);
+  // Discovery: to samo co zwracasz w /.well-known/mcp
+  res.status(200).json({
+    mcp_version: '1.0',
+    tools: [
+      {
+        name: 'getOrderDetails',
+        description:
+          'Zwraca dane zamówienia Woo po ID lub numerze; weryfikuje email.',
+        input_schema: {
+          $schema: 'https://json-schema.org/draft/2020-12/schema',
+          type: 'object',
+          additionalProperties: false,
+          required: ['tenant', 'orderRef', 'email'],
+          properties: {
+            tenant: { type: 'string', enum: ['demo'] },
+            orderRef: { type: 'string', description: 'ID lub numer zamówienia' },
+            email: { type: 'string', format: 'email' },
+          },
+        },
+      },
+    ],
+  });
 }
