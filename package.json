@@ -1,5 +1,1 @@
-{
-  "name": "vercel-minimal-ok",
-  "private": true,
-  "type": "module"
-}
+{ "name": "mcp-woo-vercel", "private": true, "type": "module" }
