@@ -77,7 +77,7 @@ export default async function handler(req, res) {
     }
 
     const { name, arguments: args } = body;
-    if (name !== "getOrderDetails") return res.status(400).json({ error: "unknown_tool" });
+    if (name !== "get_order_details") return res.status(400).json({ error: "unknown_tool" });
 
     const tenant   = String(args?.tenant || "");
     const orderRef = String(args?.orderRef || "");
