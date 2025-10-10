@@ -1,10 +1,8 @@
 {
+  "version": 2,
   "rewrites": [
-    { "source": "/mcp", "destination": "/api/mcp/index.js" },
-    { "source": "/mcp/list_tools", "destination": "/api/mcp/index.js" },
-    { "source": "/mcp/tool.call", "destination": "/api/mcp/index.js" },
-    { "source": "/api/mcp", "destination": "/api/mcp/index.js" },
-    { "source": "/api/mcp/list_tools", "destination": "/api/mcp/index.js" },
-    { "source": "/api/mcp/tool.call", "destination": "/api/mcp/index.js" }
+    { "source": "/mcp", "destination": "/api/mcp" },
+    { "source": "/mcp/list_tools", "destination": "/api/mcp?action=list_tools" },
+    { "source": "/mcp/tool.call", "destination": "/api/mcp?action=tool.call" }
   ]
 }
