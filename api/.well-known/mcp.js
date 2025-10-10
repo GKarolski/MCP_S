@@ -7,7 +7,7 @@ export default function handler(req, res) {
         type: "object",
         required: ["tenant","orderId","email"],
         properties: {
-          tenant: { type: "string", enum: ["demo"] },
+          tenant: { type: "string", enum: ["demo"] }, // dodasz kolejne: ["demo","shop2",...]
           orderId: { type: "string" },
           email: { type: "string", format: "email" }
         }
