@@ -15,7 +15,7 @@ export default async function handler(req, res) {
     mcp_version: '1.0',
     tools: [
       {
-        name: 'getOrderDetails',
+        name: 'get_order_details',    
         description: 'Zwraca dane zamówienia Woo po ID lub numerze; weryfikuje email.',
         input_schema: {
           $schema: 'https://json-schema.org/draft/2020-12/schema',
