@@ -1,6 +1,7 @@
 {
   "routes": [
     { "src": "^/mcp$", "dest": "/api/mcp/index" },
-    { "src": "^/mcp/.*", "dest": "/api/mcp/index" }
+    { "src": "^/mcp/list_tools$", "dest": "/api/mcp/list_tools" },
+    { "src": "^/mcp/tool\\.call$", "dest": "/api/mcp/tool.call" }
   ]
 }
