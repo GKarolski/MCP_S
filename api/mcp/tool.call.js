@@ -1,14 +1,11 @@
 import axios from "axios";
 
-/** Konfiguracja tenantów z ENV */
 const tenants = {
   demo: {
     base: process.env.TENANT_DEMO_BASE,
     key: process.env.TENANT_DEMO_KEY,
     secret: process.env.TENANT_DEMO_SECRET
   }
-  // przykład kolejnego:
-  // shop2: { base: process.env.TENANT_SHOP2_BASE, key: process.env.TENANT_SHOP2_KEY, secret: process.env.TENANT_SHOP2_SECRET }
 };
 
 function woo(tenant) {
@@ -18,20 +15,25 @@ function woo(tenant) {
     baseURL: `${t.base.replace(/\/$/,"")}/wp-json/wc/v3`,
     auth: { username: t.key, password: t.secret },
     timeout: 10000,
-    headers: { "User-Agent": "mcp-woo/0.1" }
+    headers: { "User-Agent": "mcp-woo/0.2" }
   });
 }
 
-/** Wyciąganie numerów śledzenia z popularnych meta */
+async function resolveOrderId(api, orderRef) {
+  // jeśli czysta liczba, traktuj jako ID
+  if (/^\d+$/.test(String(orderRef))) return String(orderRef);
+  // inaczej szukaj po numerze
+  const { data: list } = await api.get('/orders', { params: { search: String(orderRef), per_page: 20 } });
+  const hit = Array.isArray(list) ? list.find(o => String(o.number) === String(orderRef)) : null;
+  if (!hit) throw new Error('order_not_found_by_number');
+  return String(hit.id);
+}
+
 function extractTracking(meta) {
   if (!Array.isArray(meta)) return null;
   const byKey = k => meta.find(m => m?.key === k)?.value;
-
-  // proste klucze
   const direct = byKey("tracking_number") || byKey("_tracking_number");
   if (direct) return [{ tracking_number: String(direct) }];
-
-  // WooCommerce Shipment Tracking (popularna wtyczka)
   const shipItems = byKey("_wc_shipment_tracking_items");
   if (Array.isArray(shipItems) && shipItems.length) {
     return shipItems.map(it => ({
@@ -44,20 +46,27 @@ function extractTracking(meta) {
   return null;
 }
 
+function mask(s) {
+  if (!s) return s;
+  const t = String(s);
+  if (t.length <= 4) return "***";
+  return t.slice(0, 2) + "***" + t.slice(-2);
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") return res.status(405).json({ error: "method_not_allowed" });
-
     const { name, arguments: args } = req.body || {};
     if (name !== "getOrderDetails") return res.status(400).json({ error: "unknown_tool" });
 
-    const { tenant, orderId, email } = args || {};
-    if (!tenant || !orderId || !email) return res.status(400).json({ error: "bad_args" });
+    const { tenant, orderRef, email } = args || {};
+    if (!tenant || !orderRef || !email) return res.status(400).json({ error: "bad_args" });
 
     const api = woo(String(tenant));
-    const { data: o } = await api.get(`/orders/${encodeURIComponent(orderId)}`);
+    const id = await resolveOrderId(api, orderRef);
 
-    // weryfikacja zamówienia po e-mailu
+    const { data: o } = await api.get(`/orders/${encodeURIComponent(id)}`);
+
     const ok = String(o?.billing?.email || "").toLowerCase() === String(email || "").toLowerCase();
     if (!ok) return res.json({ result: { ok: false, reason: "email_mismatch" } });
 
@@ -68,11 +77,8 @@ export default async function handler(req, res) {
     }));
     const shipping_lines = (o?.shipping_lines || []).map(s => ({
       method_id: s.method_id, method_title: s.method_title,
-      total: s.total, total_tax: s.total_tax, meta_data: s.meta_data || []
+      total: s.total, total_tax: s.total_tax
     }));
-
-    // estymacja dostawy: jeśli twoje wtyczki zapisują w meta, odczytasz tutaj
-    const eta = (o?.meta_data || []).find(m => m?.key === "estimated_delivery")?.value || null;
 
     res.json({
       result: {
@@ -92,15 +98,17 @@ export default async function handler(req, res) {
         paid: o.date_paid || null,
         completed: o.date_completed || null,
         customer: {
-          email: o.billing?.email,
+          email: mask(o.billing?.email),
           name: `${o.billing?.first_name || ""} ${o.billing?.last_name || ""}`.trim()
         },
-        addresses: { billing: o.billing, shipping: o.shipping },
+        addresses: {
+          billing: { ...o.billing, email: mask(o.billing?.email), phone: mask(o.billing?.phone) },
+          shipping: { ...o.shipping, phone: mask(o.shipping?.phone) }
+        },
         items,
         shipping_lines,
-        tracking,   // null jeśli brak
-        eta,        // null jeśli brak
-        raw_meta: o.meta_data // wyłącz w produkcji jeśli niepotrzebne
+        tracking,
+        eta: (o?.meta_data || []).find(m => m?.key === "estimated_delivery")?.value || null
       }
     });
   } catch (e) {
