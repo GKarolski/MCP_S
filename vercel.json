@@ -1,8 +1,5 @@
 {
-  "version": 2,
-  "rewrites": [
-    { "source": "/mcp", "destination": "/api/mcp" },
-    { "source": "/mcp/list_tools", "destination": "/api/mcp?action=list_tools" },
-    { "source": "/mcp/tool.call", "destination": "/api/mcp?action=tool.call" }
+  "routes": [
+    { "src": "^/mcp$", "dest": "/api/mcp/index" }
   ]
 }
