@@ -1,115 +1,82 @@
 // api/mcp/index.js
 
-// CORS + helpers
-const json = (res, code, data) => {
-  res.status(code).setHeader("Content-Type", "application/json");
-  res.end(JSON.stringify(data));
+const send = (res, code, obj) => {
+  res.status(code).setHeader('Content-Type', 'application/json');
+  res.end(JSON.stringify(obj));
 };
 const cors = (req, res) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "content-type,authorization,openai-mcp-action,x-openai-mcp-action"
-  );
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers',
+    'content-type,authorization,openai-mcp-action,x-openai-mcp-action');
 };
 
-// Lista narzędzi widoczna dla MCP
 const TOOLS = [
   {
-    name: "getOrderDetails",
-    description:
-      "Pobiera szczegóły zamówienia z WooCommerce (tenant + orderRef + email).",
+    name: 'getOrderDetails',
+    description: 'Pobiera szczegóły zamówienia z WooCommerce (tenant + orderRef + email).',
     input_schema: {
-      $schema: "https://json-schema.org/draft/2020-12/schema",
-      type: "object",
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
       properties: {
-        tenant: { type: "string", description: "Id Twojej instancji (np. 'shop1')" },
-        orderRef: { type: "string", description: "Numer lub ID zamówienia" },
-        email: { type: "string", format: "email", description: "E-mail klienta (walidacja)" }
+        tenant: { type: 'string' },
+        orderRef: { type: 'string' },
+        email: { type: 'string', format: 'email' }
       },
-      required: ["tenant", "orderRef", "email"],
+      required: ['tenant', 'orderRef', 'email'],
       additionalProperties: false
     }
   }
 ];
 
-// ---- Woo helper ----
+// ---- Woo helpers ----
 const getTenantCfg = (tenantRaw) => {
-  const T = String(tenantRaw || "").trim().toUpperCase();
-  const baseUrl = process.env[`WOO_${T}_URL`];     // np. https://example.com
-  const key     = process.env[`WOO_${T}_KEY`];     // consumer_key
-  const secret  = process.env[`WOO_${T}_SECRET`];  // consumer_secret
+  const T = String(tenantRaw || '').trim().toUpperCase();
+  const baseUrl = process.env[`WOO_${T}_URL`];
+  const key     = process.env[`WOO_${T}_KEY`];
+  const secret  = process.env[`WOO_${T}_SECRET`];
   if (!baseUrl || !key || !secret) return null;
-  return { baseUrl: baseUrl.replace(/\/$/, ""), key, secret };
+  return { baseUrl: baseUrl.replace(/\/$/, ''), key, secret };
 };
+const sum = (arr, pick) => arr.reduce((a, it) => a + (parseFloat(pick(it) || '0') || 0), 0);
+const asMoney = (n) => (Number.isFinite(n) ? n.toFixed(2) : '0.00');
 
-const sum = (arr, pick) =>
-  arr.reduce((acc, it) => acc + (parseFloat(pick(it) || "0") || 0), 0);
-const asMoney = (n) => (Number.isFinite(n) ? n.toFixed(2) : "0.00");
-
-// Główna logika narzędzia
 async function getOrderDetails({ tenant, orderRef, email }) {
   const cfg = getTenantCfg(tenant);
-  if (!cfg) {
-    return {
-      ok: false,
-      error: "config_missing",
-      message: `Brak konfiguracji środowiska dla tenanta '${tenant}'.`
-    };
-  }
+  if (!cfg) return { ok: false, error: 'config_missing', message: `Brak env dla '${tenant}'.` };
 
-  const q = new URLSearchParams({
+  const qs = new URLSearchParams({
     consumer_key: cfg.key,
     consumer_secret: cfg.secret,
-    per_page: "20",
+    per_page: '20',
     search: String(orderRef)
   });
 
-  // 1) szukamy po search
-  const listResp = await fetch(`${cfg.baseUrl}/wp-json/wc/v3/orders?${q.toString()}`);
-  if (!listResp.ok) {
-    const text = await listResp.text().catch(() => "");
-    return { ok: false, error: "upstream", status: listResp.status, body: text };
-  }
-  const orders = await listResp.json();
+  const list = await fetch(`${cfg.baseUrl}/wp-json/wc/v3/orders?${qs}`);
+  if (!list.ok) return { ok: false, error: 'upstream', status: list.status, body: await list.text().catch(()=> '') };
+  const orders = await list.json();
 
-  const normEmail = String(email).trim().toLowerCase();
-  let match =
-    orders.find(
-      (o) =>
-        (String(o.number) === String(orderRef) || String(o.id) === String(orderRef)) &&
-        String(o?.billing?.email || "").toLowerCase() === normEmail
-    ) || null;
+  const norm = String(email).trim().toLowerCase();
+  let match = orders.find(o =>
+    (String(o.number) === String(orderRef) || String(o.id) === String(orderRef)) &&
+    String(o?.billing?.email || '').toLowerCase() === norm
+  ) || null;
 
-  // 2) fallback: jeśli wygląda na ID – spróbuj GET /orders/{id}
   if (!match && /^\d+$/.test(String(orderRef))) {
-    const oneResp = await fetch(
-      `${cfg.baseUrl}/wp-json/wc/v3/orders/${orderRef}?${q.toString()}`
-    );
-    if (oneResp.ok) {
-      const one = await oneResp.json();
-      if (String(one?.billing?.email || "").toLowerCase() === normEmail) {
-        match = one;
-      }
+    const one = await fetch(`${cfg.baseUrl}/wp-json/wc/v3/orders/${orderRef}?${qs}`);
+    if (one.ok) {
+      const j = await one.json();
+      if (String(j?.billing?.email || '').toLowerCase() === norm) match = j;
     }
   }
 
-  if (!match) {
-    return {
-      ok: false,
-      error: "not_found",
-      message: "Nie znaleziono zamówienia dla podanych danych (orderRef/email)."
-    };
-  }
+  if (!match) return { ok: false, error: 'not_found', message: 'Brak dopasowania (orderRef/email).' };
 
-  // Policz podstawowe sumy
-  const itemsTotal = sum(match.line_items || [], (it) => it.total);
-  const shippingTotal = sum(match.shipping_lines || [], (s) => s.total);
-  const discount = sum(match.coupon_lines || [], (c) => c.discount);
-  const tax = sum(match.tax_lines || [], (t) => t.tax_total);
+  const itemsTotal    = sum(match.line_items || [], it => it.total);
+  const shippingTotal = sum(match.shipping_lines || [], s => s.total);
+  const discount      = sum(match.coupon_lines || [], c => c.discount);
+  const tax           = sum(match.tax_lines || [], t => t.tax_total);
 
-  // Zwracamy schludną strukturę
   return {
     ok: true,
     id: match.id,
@@ -120,71 +87,55 @@ async function getOrderDetails({ tenant, orderRef, email }) {
       items_total: asMoney(itemsTotal),
       shipping: asMoney(shippingTotal),
       discount: asMoney(discount),
-      tax: asMoney(tax)
+      tax: asMoney(tax),
     },
     created: match.date_created,
     paid: match.date_paid || null,
     completed: match.date_completed || null,
     customer: {
       email: match?.billing?.email || null,
-      name: `${match?.billing?.first_name || ""} ${match?.billing?.last_name || ""}`.trim()
+      name: `${match?.billing?.first_name || ''} ${match?.billing?.last_name || ''}`.trim(),
     },
-    addresses: {
-      billing: match.billing || null,
-      shipping: match.shipping || null
-    },
-    items: (match.line_items || []).map((it) => ({
-      id: it.id,
-      name: it.name,
-      sku: it.sku,
-      qty: it.quantity,
-      subtotal: it.subtotal,
-      total: it.total,
-      total_tax: it.total_tax
+    addresses: { billing: match.billing || null, shipping: match.shipping || null },
+    items: (match.line_items || []).map(it => ({
+      id: it.id, name: it.name, sku: it.sku, qty: it.quantity,
+      subtotal: it.subtotal, total: it.total, total_tax: it.total_tax
     })),
-    shipping_lines: (match.shipping_lines || []).map((s) => ({
-      method_id: s.method_id,
-      method_title: s.method_title,
-      total: s.total,
-      total_tax: s.total_tax
-    }))
-    // jeśli masz tracking w meta_data – tu możesz go wypakować
+    shipping_lines: (match.shipping_lines || []).map(s => ({
+      method_id: s.method_id, method_title: s.method_title, total: s.total, total_tax: s.total_tax
+    })),
   };
 }
 
-// Map narzędzi
 const HANDLERS = { getOrderDetails };
 
-// MCP endpoint (list_tools + call_tool w jednym /mcp)
-export default async function handler(req, res) {
+module.exports = async (req, res) => {
   cors(req, res);
-  if (req.method === "OPTIONS") return res.status(204).end();
-  if (req.method !== "POST") return json(res, 405, { error: "method_not_allowed" });
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
 
   let body = req.body;
-  try { if (typeof body === "string") body = JSON.parse(body || "{}"); } catch { body = {}; }
+  try { if (typeof body === 'string') body = JSON.parse(body || '{}'); } catch { body = {}; }
 
-  const hdr = req.headers["openai-mcp-action"] || req.headers["x-openai-mcp-action"];
-  const isCall = !!body?.name || String(hdr || "").toLowerCase() === "call_tool";
+  const actionHdr = (req.headers['openai-mcp-action'] || req.headers['x-openai-mcp-action'] || '').toLowerCase();
+  const action = body?.action || body?.kind || actionHdr;
 
-  if (!isCall) {
-    // LIST TOOLS
-    return json(res, 200, { tools: TOOLS });
+  // LIST TOOLS (łapiemy wszystko co wygląda jak list + przypadek pustego body)
+  if (!body?.name && (!action || /list/.test(String(action)))) {
+    return send(res, 200, { tools: TOOLS });
   }
 
   // CALL TOOL
-  const { name, arguments: args } = body || {};
+  const name = body?.name || body?.tool || body?.toolName;
+  const args = body?.arguments || body?.params || {};
   const fn = HANDLERS[name];
-  if (!fn) {
-    return json(res, 200, { output: JSON.stringify({ ok: false, error: "unknown_tool", name }) });
-  }
+
+  if (!fn) return send(res, 200, { output: JSON.stringify({ ok: false, error: 'unknown_tool', name }) });
 
   try {
-    const result = await fn(args || {});
-    return json(res, 200, { output: JSON.stringify(result) });
+    const result = await fn(args);
+    return send(res, 200, { output: JSON.stringify(result) });
   } catch (e) {
-    return json(res, 200, {
-      output: JSON.stringify({ ok: false, error: "tool_failed", message: e?.message || "Unknown error" })
-    });
+    return send(res, 200, { output: JSON.stringify({ ok: false, error: 'tool_failed', message: e?.message || 'err' })});
   }
-}
+};
