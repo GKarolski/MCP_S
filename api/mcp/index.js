@@ -1,137 +1,113 @@
-/* MCP server for Vercel (CommonJS)
-   Endpoints:
-   - GET  /mcp               -> discovery (mcp_version + tools)
-   - POST /mcp/list_tools    -> list tools
-   - GET  /mcp/list_tools    -> list tools (also allowed)
-   - POST /mcp/tool.call     -> call tool
-*/
+/* CommonJS handler for Vercel (no ESM). */
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization"
+};
 
-const encodeBasic = (k, s) =>
-  Buffer.from(`${k}:${s}`, "utf8").toString("base64");
-
-function cors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-}
-
-function send(res, status, payload) {
-  cors(res);
-  res.statusCode = status;
+function send(res, status, bodyObj) {
+  res.status(status);
+  for (const [k, v] of Object.entries(CORS_HEADERS)) res.setHeader(k, v);
   res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(JSON.stringify(payload));
+  res.end(JSON.stringify(bodyObj));
 }
 
-function ok(res, payload) { send(res, 200, payload); }
-function bad(res, msg) { send(res, 400, { error: msg }); }
-function notFound(res) { send(res, 404, { error: "not_found" }); }
-function serverError(res, e) {
-  send(res, 500, { error: "internal_error", detail: (e && e.message) || String(e) });
+function ok(res, obj)    { send(res, 200, obj); }
+function bad(res, msg)   { send(res, 400, { error: msg }); }
+function notf(res, msg)  { send(res, 404, { error: msg || "not_found" }); }
+function oops(res, msg)  { send(res, 500, { error: msg || "server_error" }); }
+
+function parseJSON(body) {
+  try { return JSON.parse(body || "{}"); } catch { return null; }
 }
 
-// ---------- Tenants from ENV ----------
-// Expect ENV like:
-// WOO_SHOP1_URL, WOO_SHOP1_KEY, WOO_SHOP1_SECRET
-function getWooTenants() {
-  const groups = {}; // id -> {URL, KEY, SECRET}
-  for (const [k, v] of Object.entries(process.env)) {
-    const m = /^WOO_([A-Z0-9_]+)_(URL|KEY|SECRET)$/i.exec(k);
-    if (!m) continue;
-    const id = m[1].toLowerCase(); // shop1 -> lower
-    const field = m[2].toUpperCase();
-    groups[id] = groups[id] || {};
-    groups[id][field] = v;
-  }
-  // keep only fully-configured tenants
-  const out = {};
-  Object.entries(groups).forEach(([id, cfg]) => {
-    if (cfg.URL && cfg.KEY && cfg.SECRET) out[id] = cfg;
-  });
-  return out;
+function maskEmail(e) {
+  if (!e) return "";
+  const [u,d] = e.split("@");
+  return (u?.slice(0,2) || "") + "***@" + (d ? d.replace(/^[^.]*/, m => m[0]+"***") : "***");
 }
+function maskPhone(p) { return p ? p.toString().slice(0,2) + "***" + p.toString().slice(-2) : ""; }
 
-// ---------- Woo API helpers ----------
-async function wooFetch(tenantCfg, path) {
-  const base = tenantCfg.URL.replace(/\/+$/, "");
-  const url = `${base}/wp-json/wc/v3${path}`;
-  const resp = await fetch(url, {
-    headers: {
-      "Authorization": `Basic ${encodeBasic(tenantCfg.KEY, tenantCfg.SECRET)}`
+function getTenantsFromEnv() {
+  // WOO_<TENANT>_URL / KEY / SECRET  → tenant id w lower-case
+  const found = {};
+  for (const [k,v] of Object.entries(process.env)) {
+    let m = k.match(/^WOO_([A-Z0-9_]+)_URL$/i);
+    if (m && v) {
+      const t = m[1].toLowerCase();
+      const url    = process.env[`WOO_${m[1]}_URL`];
+      const key    = process.env[`WOO_${m[1]}_KEY`];
+      const secret = process.env[`WOO_${m[1]}_SECRET`];
+      if (url && key && secret) found[t] = { url: url.replace(/\/$/,''), key, secret };
     }
-  });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    const err = new Error(`Woo request failed ${resp.status}: ${text}`);
-    err.status = resp.status;
+  }
+  // fallback: legacy demo if no envs
+  if (Object.keys(found).length === 0 && process.env.DEMO_URL) {
+    found["demo"] = {
+      url: process.env.DEMO_URL.replace(/\/$/,''),
+      key: process.env.DEMO_KEY,
+      secret: process.env.DEMO_SECRET
+    };
+  }
+  return found;
+}
+
+function listToolsPayload() {
+  const tenants = Object.keys(getTenantsFromEnv());
+  return {
+    tools: [
+      {
+        name: "getOrderDetails",
+        description: "Zwraca dane zamówienia Woo po ID lub numerze; weryfikuje email.",
+        input_schema: {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tenant", "orderRef", "email"],
+          "properties": {
+            "tenant": { "type": "string", "enum": tenants.length ? tenants : ["demo"] },
+            "orderRef": { "type": "string", "description": "ID lub numer zamówienia" },
+            "email": { "type": "string", "format": "email" }
+          }
+        }
+      }
+    ]
+  };
+}
+
+async function wooGetJson(url) {
+  const r = await fetch(url, { headers: { "Accept": "application/json" } });
+  if (!r.ok) {
+    const text = await r.text().catch(()=> "");
+    const err = new Error(`Woo request failed: ${r.status} ${r.statusText} ${text}`);
+    err.status = r.status;
     throw err;
   }
-  return resp.json();
+  return r.json();
 }
 
-async function findOrder(tenantCfg, orderRef) {
-  // 1) try by ID
-  if (/^\d+$/.test(orderRef)) {
-    try {
-      const byId = await wooFetch(tenantCfg, `/orders/${orderRef}`);
-      if (byId && byId.id) return byId;
-    } catch (e) {
-      if (e.status !== 404) throw e;
-    }
-  }
-  // 2) fallback search (by number or general search)
-  // Woo core doesn't filter directly by "number"; search will match many fields.
-  const list = await wooFetch(tenantCfg, `/orders?search=${encodeURIComponent(orderRef)}&per_page=20&orderby=date&order=desc`);
-  if (Array.isArray(list) && list.length) {
-    // prefer exact number match if present
-    const exact = list.find(o => String(o.number) === String(orderRef));
-    return exact || list[0];
-  }
-  const list2 = await wooFetch(tenantCfg, `/orders?per_page=20&orderby=date&order=desc`);
-  const maybe = list2.find(o => String(o.number) === String(orderRef) || String(o.id) === String(orderRef));
-  return maybe || null;
-}
-
-function maskEmail(email) {
-  if (!email) return "";
-  const [name, dom] = email.split("@");
-  if (!dom) return email;
-  return (name.slice(0, 2) + "***") + "@"
-    + (dom.slice(0, 1) + "***" + (dom.includes(".") ? dom.slice(dom.indexOf(".")) : ""));
-}
-
-function maskPhone(phone) {
-  if (!phone) return "";
-  return phone.slice(0, 2) + "***" + phone.slice(-2);
-}
-
-function toResult(order) {
-  const itemsTotal = parseFloat(order.total || "0"); // total including shipping/tax/discounts
-  const shippingTotal = (order.shipping_total ?? order.shipping_lines?.reduce((a, s) => a + parseFloat(s.total || "0"), 0) ?? 0);
-  const discount = parseFloat(order.discount_total || "0");
-  const tax = parseFloat(order.total_tax || "0");
-
-  const billing = order.billing || {};
-  const shipping = order.shipping || {};
-
+function sanitizeOrder(o) {
+  const billing  = o.billing || {};
+  const shipping = o.shipping || {};
   return {
     ok: true,
-    id: order.id,
-    number: String(order.number ?? order.id),
-    status: order.status,
-    currency: order.currency,
+    id: o.id,
+    number: o.number || String(o.id),
+    status: o.status,
+    currency: o.currency,
     totals: {
-      items_total: itemsTotal.toFixed(2),
-      subtotal: null,
-      shipping: String(shippingTotal),
-      discount: discount.toFixed(2),
-      tax: tax.toFixed(2),
+      items_total: o.total ? (Number(o.total) - Number(o.shipping_total || 0)).toFixed(2) : null,
+      subtotal: o.subtotal || null,
+      shipping: o.shipping_total ?? null,
+      discount: o.discount_total ?? "0.00",
+      tax: o.total_tax ?? "0.00"
     },
-    created: order.date_created,
-    paid: order.date_paid || null,
-    completed: order.date_completed || null,
+    created: o.date_created_gmt || o.date_created || null,
+    paid: o.date_paid_gmt || o.date_paid || null,
+    completed: o.date_completed_gmt || o.date_completed || null,
     customer: {
-      email: maskEmail(billing.email),
-      name: [billing.first_name, billing.last_name].filter(Boolean).join(" ") || null,
+      email: maskEmail(billing.email || o.billing?.email || o.customer_email),
+      name: [billing.first_name, billing.last_name].filter(Boolean).join(" ").trim()
     },
     addresses: {
       billing: {
@@ -144,12 +120,8 @@ function toResult(order) {
         state: billing.state || "",
         postcode: billing.postcode || "",
         country: billing.country || "",
-        email: maskEmail(billing.email),
-        phone: maskPhone(billing.phone),
-        billing_company: billing.company || "",
-        biling_nip: "", // left empty (custom fields vary by shop)
-        billing_first_name: billing.first_name || "",
-        billing_address_1: billing.address_1 || "",
+        email: maskEmail(billing.email || ""),
+        phone: maskPhone(billing.phone || "")
       },
       shipping: {
         first_name: shipping.first_name || "",
@@ -161,129 +133,107 @@ function toResult(order) {
         state: shipping.state || "",
         postcode: shipping.postcode || "",
         country: shipping.country || "",
-        phone: maskPhone(billing.phone || ""),
-        shipping_address_1: shipping.address_1 || "",
-        shipping_phone: "",
-      },
-    },
-    items: (order.line_items || []).map(li => ({
-      id: li.id,
-      name: li.name,
-      sku: li.sku,
-      qty: li.quantity,
-      subtotal: String(li.subtotal),
-      total: String(li.total),
-      total_tax: String(li.total_tax),
-    })),
-    shipping_lines: (order.shipping_lines || []).map(s => ({
-      method_id: s.method_id,
-      method_title: s.method_title,
-      total: String(s.total),
-      total_tax: String(s.total_tax),
-    })),
-    tracking: [], // plugin-dependent; left empty
-    eta: null,
-  };
-}
-
-// ---------- Tool definition ----------
-function buildToolSchema() {
-  const tenants = Object.keys(getWooTenants());
-  return {
-    name: "getOrderDetails",
-    description: "Zwraca dane zamówienia Woo po ID lub numerze; weryfikuje email.",
-    input_schema: {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["tenant", "orderRef", "email"],
-      "properties": {
-        "tenant": { "type": "string", "enum": tenants.length ? tenants : ["demo"] },
-        "orderRef": { "type": "string", "description": "ID lub numer zamówienia" },
-        "email": { "type": "string", "format": "email" }
+        phone: maskPhone(shipping.phone || "")
       }
-    }
+    },
+    items: (o.line_items || []).map(it => ({
+      id: it.id, name: it.name, sku: it.sku, qty: it.quantity,
+      subtotal: it.subtotal, total: it.total, total_tax: it.total_tax
+    })),
+    shipping_lines: (o.shipping_lines || []).map(s => ({
+      method_id: s.method_id, method_title: s.method_title, total: s.total, total_tax: s.total_tax
+    })),
+    tracking: [], // opcjonalnie: wtyczki wysyłkowe – dołącz jeśli masz meta
+    eta: null
   };
 }
 
-function listToolsPayload() {
-  return { tools: [buildToolSchema()] };
-}
+async function getOrderByRef(cfg, ref) {
+  const base = `${cfg.url}/wp-json/wc/v3`;
+  const authQ = `consumer_key=${encodeURIComponent(cfg.key)}&consumer_secret=${encodeURIComponent(cfg.secret)}`;
 
-async function runGetOrderDetails(args) {
-  const { tenant, orderRef, email } = args || {};
-  if (!tenant || !orderRef || !email) {
-    return { error: "missing_arguments" };
-  }
-  const tenants = getWooTenants();
-  const tcfg = tenants[tenant];
-  if (!tcfg) {
-    return { error: `unknown_tenant '${tenant}'` };
-  }
-
-  const order = await findOrder(tcfg, String(orderRef));
-  if (!order || !order.id) {
-    return { error: "order_not_found" };
-  }
-
-  const orderEmail = (order.billing && (order.billing.email || "")).trim().toLowerCase();
-  if (!orderEmail || orderEmail !== String(email).trim().toLowerCase()) {
-    return { error: "email_mismatch" };
-  }
-
-  return { result: toResult(order) };
-}
-
-// ---------- HTTP handler ----------
-module.exports = async (req, res) => {
-  try {
-    cors(res);
-    if (req.method === "OPTIONS") {
-      res.statusCode = 204;
-      return res.end();
+  // 1) spróbuj jako ID
+  if (/^\d+$/.test(String(ref))) {
+    try {
+      const byId = await wooGetJson(`${base}/orders/${encodeURIComponent(ref)}?${authQ}`);
+      if (byId && byId.id) return byId;
+    } catch (e) {
+      // 404 ok → próbujemy dalej
+      if (e.status && e.status !== 404) throw e;
     }
+  }
 
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const path = url.pathname; // e.g. /mcp, /mcp/list_tools, /mcp/tool.call
+  // 2) search (po tytule / numerze)
+  const list = await wooGetJson(`${base}/orders?search=${encodeURIComponent(ref)}&per_page=20&${authQ}`);
+  const hit = Array.isArray(list) ? list.find(o => String(o.number || o.id) === String(ref)) : null;
+  if (hit) return hit;
 
-    if (req.method === "GET" && path === "/mcp") {
+  // 3) fallback: pobierz kilka ostatnich i spróbuj dopasować number
+  const recent = await wooGetJson(`${base}/orders?orderby=date&order=desc&per_page=30&${authQ}`);
+  const hit2 = Array.isArray(recent) ? recent.find(o => String(o.number || o.id) === String(ref)) : null;
+  return hit2 || null;
+}
+
+async function handleGetOrderDetails(args) {
+  const tenants = getTenantsFromEnv();
+  const tenant = (args.tenant || "").toLowerCase();
+  if (!tenants[tenant]) return { error: "unknown_tenant", tenants: Object.keys(tenants) };
+
+  const orderRef = (args.orderRef || "").toString().trim();
+  const email = (args.email || "").toString().trim().toLowerCase();
+  if (!orderRef || !email || !email.includes("@")) return { error: "invalid_arguments" };
+
+  const order = await getOrderByRef(tenants[tenant], orderRef);
+  if (!order) return { error: "order_not_found" };
+
+  const billingEmail = (order.billing?.email || order.customer_email || "").toLowerCase();
+  if (billingEmail && billingEmail !== email) return { error: "email_mismatch" };
+
+  return { result: sanitizeOrder(order) };
+}
+
+module.exports = async (req, res) => {
+  // CORS & preflight
+  if (req.method === "OPTIONS") {
+    res.statusCode = 204;
+    for (const [k, v] of Object.entries(CORS_HEADERS)) res.setHeader(k, v);
+    return res.end();
+  }
+
+  let mode = "discovery";
+  try {
+    const u = new URL(req.url, "http://x");
+    mode = u.searchParams.get("m") || "discovery";
+  } catch {}
+
+  try {
+    if (mode === "discovery" && (req.method === "GET" || req.method === "POST")) {
       return ok(res, { mcp_version: "1.0", ...listToolsPayload() });
     }
 
-    if ((req.method === "POST" || req.method === "GET") && path === "/mcp/list_tools") {
+    if (mode === "list_tools" && req.method === "POST") {
       return ok(res, listToolsPayload());
     }
 
-    if (req.method === "POST" && path === "/mcp/tool.call") {
-      const body = await readJson(req);
-      if (!body || typeof body.name !== "string") return bad(res, "invalid_body");
+    if (mode === "tool.call" && req.method === "POST") {
+      let raw = "";
+      await new Promise(resolve => {
+        req.on("data", chunk => raw += chunk);
+        req.on("end", resolve);
+      });
+      const body = parseJSON(raw);
+      if (!body) return bad(res, "invalid_json");
 
-      if (body.name === "getOrderDetails") {
-        const out = await runGetOrderDetails(body.arguments || {});
-        if (out.error) return ok(res, out);
-        return ok(res, out);
-      }
-      return bad(res, `unknown_tool '${body.name}'`);
+      const name = body.name;
+      const args = body.arguments || {};
+      if (name !== "getOrderDetails") return notf(res, "unknown_tool");
+
+      const out = await handleGetOrderDetails(args);
+      return ok(res, out);
     }
 
-    if (req.method === "POST" && path === "/mcp") {
-      // Accept POST /mcp as discovery (some clients do this)
-      return ok(res, { mcp_version: "1.0", ...listToolsPayload() });
-    }
-
-    return notFound(res);
+    return notf(res, "no_route");
   } catch (e) {
-    return serverError(res, e);
+    return oops(res, e?.message || "error");
   }
 };
-
-function readJson(req) {
-  return new Promise((resolve) => {
-    let data = "";
-    req.on("data", (chunk) => (data += chunk));
-    req.on("end", () => {
-      try { resolve(data ? JSON.parse(data) : {}); }
-      catch { resolve(null); }
-    });
-  });
-}
