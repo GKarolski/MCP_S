@@ -5,10 +5,10 @@ export default function handler(req, res) {
       name: "getOrderDetails",
       input_schema: {
         type: "object",
-        required: ["tenant","orderId","email"],
+        required: ["tenant","orderRef","email"],
         properties: {
-          tenant: { type: "string", enum: ["demo"] }, // dodasz kolejne: ["demo","shop2",...]
-          orderId: { type: "string" },
+          tenant: { type: "string", enum: ["demo"] },
+          orderRef: { type: "string", description: "ID lub numer zamówienia" },
           email: { type: "string", format: "email" }
         }
       }
