@@ -1,9 +1,11 @@
 export default function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.status(204).end();
-  if (req.method !== 'GET') return res.status(405).json({ error: 'method_not_allowed' });
+
+  // log pomocniczy (zostaw na chwilę)
+  console.log('MCP hit', { method: req.method, ua: req.headers['user-agent'] });
 
   const tool = {
     name: 'get_order_details',
@@ -21,5 +23,11 @@ export default function handler(req, res) {
     }
   };
 
-  res.status(200).json({ mcp_version: '1.0', tools: [tool] });
+  // WAŻNE: odpowiadamy identycznym JSON-em dla GET **i** POST
+  if (req.method === 'GET' || req.method === 'POST') {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    return res.status(200).json({ mcp_version: '1.0', tools: [tool] });
+  }
+
+  return res.status(405).json({ error: 'method_not_allowed' });
 }
