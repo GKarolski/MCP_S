@@ -1,7 +1,10 @@
 {
-  "routes": [
-    { "src": "^/mcp$", "methods": ["GET","POST","OPTIONS"], "dest": "/api/mcp/index.cjs?m=discovery" },
-    { "src": "^/mcp/list_tools$", "methods": ["POST","OPTIONS"], "dest": "/api/mcp/index.cjs?m=list_tools" },
-    { "src": "^/mcp/tool.call$", "methods": ["POST","OPTIONS"], "dest": "/api/mcp/index.cjs?m=tool.call" }
+  "rewrites": [
+    { "source": "/mcp", "destination": "/api/mcp/index.js" },
+    { "source": "/mcp/list_tools", "destination": "/api/mcp/index.js" },
+    { "source": "/mcp/tool.call", "destination": "/api/mcp/index.js" },
+    { "source": "/api/mcp", "destination": "/api/mcp/index.js" },
+    { "source": "/api/mcp/list_tools", "destination": "/api/mcp/index.js" },
+    { "source": "/api/mcp/tool.call", "destination": "/api/mcp/index.js" }
   ]
 }
