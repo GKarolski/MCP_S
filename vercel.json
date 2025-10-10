@@ -2,6 +2,7 @@
   "version": 2,
   "routes": [
     { "src": "/\\.well-known/mcp", "dest": "/api/mcp.discovery.js" },
-    { "src": "/mcp/tool.call", "dest": "/api/mcp/tool.call.js" }
+    { "src": "/mcp/list_tools",    "dest": "/api/mcp.list_tools.js" },
+    { "src": "/mcp/tool.call",     "dest": "/api/mcp.tool.call.js" }
   ]
 }
