@@ -1,12 +1,21 @@
-export default function handler(req, res) {
-  res.setHeader('Content-Type', 'application/json');
+function cors(res){
+  res.setHeader('Access-Control-Allow-Origin','*');
+  res.setHeader('Access-Control-Allow-Methods','GET,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers','Content-Type, Authorization');
+}
+export default function handler(req,res){
+  cors(res);
+  if(req.method==='OPTIONS') return res.status(204).end();
+  if(req.method!=='GET') return res.status(405).json({error:'method_not_allowed'});
+
+  res.setHeader('Content-Type','application/json');
   res.json({
     mcp_version: "1.0",
     tools: [{
       name: "getOrderDetails",
       description: "Zwraca dane zamówienia Woo po ID lub numerze; weryfikuje email.",
       input_schema: {
-        "$schema": "http://json-schema.org/draft-07/schema#",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "additionalProperties": false,
         "required": ["tenant","orderRef","email"],
