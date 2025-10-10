@@ -1,7 +1,7 @@
 {
-  "rewrites": [
-    { "source": "/mcp", "destination": "/api/mcp" },
-    { "source": "/mcp/list_tools", "destination": "/api/mcp/list_tools" },
-    { "source": "/mcp/tool.call", "destination": "/api/mcp/tool.call" }
+  "routes": [
+    { "src": "^/mcp$", "dest": "/api/mcp/index" },
+    { "src": "^/mcp/list_tools$", "dest": "/api/mcp/list_tools" },
+    { "src": "^/mcp/tool\\.call$", "dest": "/api/mcp/tool.call" }
   ]
 }
