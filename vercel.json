@@ -1,8 +1,9 @@
 {
   "version": 2,
   "routes": [
-    { "src": "/\\.well-known/mcp", "dest": "/api/mcp.discovery.js" },
-    { "src": "/mcp/list_tools",    "dest": "/api/mcp.list_tools.js" },
-    { "src": "/mcp/tool.call",     "dest": "/api/mcp.tool.call.js" }
+    { "src": "^/.well-known/mcp$", "dest": "/api/mcp.discovery" },
+    { "src": "^/mcp$", "dest": "/api/mcp.discovery" },
+    { "src": "^/mcp/list_tools$", "dest": "/api/mcp.list_tools" },
+    { "src": "^/mcp/tool.call$", "dest": "/api/mcp.tool.call" }
   ]
 }
