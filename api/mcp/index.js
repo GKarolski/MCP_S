@@ -1,78 +1,61 @@
-// ESM (package.json: { "type": "module" })
+// ESM: w package.json musi być { "type": "module" }
 export default async function handler(req, res) {
-  // --- CORS & security ---
+  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "content-type,authorization,openai-mcp-action,x-openai-mcp-action,x-openai-organization,x-openai-project"
+  );
   if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
-  // --- routing via ?action=... (patrz vercel.json rewrites) ---
-  const url = new URL(req.url, "http://localhost");
-  const action = (url.searchParams.get("action") || "").toLowerCase();
+  // Body (Vercel zwykle już parsuje, ale na wszelki wypadek)
+  let body = req.body;
+  if (typeof body === "string") {
+    try { body = JSON.parse(body || "{}"); } catch { body = {}; }
+  }
+  const actionHdr = String(
+    req.headers["openai-mcp-action"] || req.headers["x-openai-mcp-action"] || ""
+  ).toLowerCase();
+
+  // Jeśli brak body.name i brak nagłówka "call_tool" → lista narzędzi
+  const isCall = !!(body && body.name) || actionHdr === "call_tool";
+  if (!isCall) {
+    return res.status(200).json({
+      tools: [toolSchema()]
+    });
+  }
+
+  // Wywołanie narzędzia
+  const { name, arguments: args } = body || {};
+  if (name !== "getOrderDetails") {
+    return res.status(400).json({ error: "unknown_tool" });
+  }
 
   try {
-    if ((req.method === "GET" && !action) || (req.method === "POST" && !action)) {
-      // Discovery (GET /mcp) i kompatybilny POST /mcp
-      return json(res, 200, discovery());
-    }
-
-    if ((req.method === "GET" || req.method === "POST") && action === "list_tools") {
-      return json(res, 200, listTools());
-    }
-
-    if (req.method === "POST" && action === "tool.call") {
-      const body = parseBody(req);
-      if (!body || typeof body !== "object") {
-        return json(res, 400, { error: "invalid_json" });
-      }
-      const { name, arguments: args } = body;
-      if (name !== "getOrderDetails") {
-        return json(res, 400, { error: "unknown_tool" });
-      }
-      const result = await getOrderDetails(args);
-      return json(res, 200, { result });
-    }
-
-    return json(res, 404, { error: "not_found" });
+    const result = await getOrderDetails(args);
+    // Zwracamy w polu "output" jako string (zgodnie z oczekiwaniem Buildera)
+    return res.status(200).json({ output: JSON.stringify({ result }) });
   } catch (e) {
     console.error(e);
-    return json(res, 500, { error: "internal_error" });
+    return res.status(500).json({ error: "tool_failed", detail: String(e?.message || e) });
   }
 }
 
-// ---------- helpers ----------
-function json(res, status, obj) {
-  res.status(status).setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(JSON.stringify(obj));
-}
-
-function parseBody(req) {
-  // Vercel body parser zwykle już to robi, ale zachowujemy kompatybilność
-  return req.body && typeof req.body === "object" ? req.body : undefined;
-}
-
-function getTenants() {
-  // Z env: WOO_<TENANT>_URL/KEY/SECRET  -> tenant = <tenant> w lowercase
-  const tenants = new Set();
-  for (const k of Object.keys(process.env)) {
-    const m = k.match(/^WOO_(.+)_(URL|KEY|SECRET)$/i);
-    if (m) tenants.add(m[1].toLowerCase());
-  }
-  return [...tenants];
-}
+/* ---------- definicje i utils ---------- */
 
 function toolSchema() {
   return {
     name: "getOrderDetails",
-    description: "Zwraca dane zamówienia Woo po ID lub numerze; weryfikuje email.",
+    description: "Zwraca dane zamówienia WooCommerce po ID/num., weryfikuje email.",
     input_schema: {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       type: "object",
       additionalProperties: false,
       required: ["tenant", "orderRef", "email"],
       properties: {
-        tenant: { type: "string", enum: getTenants() },
+        tenant: { type: "string", enum: detectTenants() },
         orderRef: { type: "string", description: "ID lub numer zamówienia" },
         email: { type: "string", format: "email" }
       }
@@ -80,49 +63,51 @@ function toolSchema() {
   };
 }
 
-function discovery() {
-  return { mcp_version: "1.0", tools: [toolSchema()] };
+function detectTenants() {
+  // Szuka zmiennych: WOO_<TENANT>_URL/KEY/SECRET → tenant to <tenant> (lowercase)
+  const tenants = new Set();
+  for (const k of Object.keys(process.env)) {
+    const m = k.match(/^WOO_(.+)_(URL|KEY|SECRET)$/i);
+    if (m) tenants.add(m[1].toLowerCase());
+  }
+  const list = [...tenants];
+  return list.length ? list : ["shop1"]; // fallback, żeby Builder zawsze coś widział
 }
 
-function listTools() {
-  return { tools: [toolSchema()] };
-}
-
-// ---------- WooCommerce ----------
 async function getOrderDetails(args) {
   const { tenant, orderRef, email } = args || {};
   if (!tenant || !orderRef || !email) throw new Error("missing_arguments");
 
   const cfg = readShopCfg(tenant);
-  if (!cfg) return { ok: false, error: "unknown_tenant" };
+  if (!cfg) throw new Error("unknown_tenant");
 
-  // 1) spróbuj po ID
+  // 1) po ID
   let order = await wooGet(cfg, `/orders/${encodeURIComponent(orderRef)}`);
-  // 2) jeśli nie ma, spróbuj po number/search
-  if (!order || !isOrder(order)) {
-    const found = await wooGet(cfg, `/orders`, { search: String(orderRef), per_page: 20 });
+  // 2) jeśli brak → search po numerze
+  if (!isOrder(order)) {
+    const found = await wooGet(cfg, "/orders", { search: String(orderRef), per_page: 20 });
     if (Array.isArray(found)) {
-      order = found.find(o => String(o?.number) === String(orderRef) || String(o?.id) === String(orderRef));
+      order = found.find(
+        (o) => String(o?.number) === String(orderRef) || String(o?.id) === String(orderRef)
+      );
     }
   }
-  if (!order || !isOrder(order)) return { ok: false, error: "not_found" };
+  if (!isOrder(order)) throw new Error("not_found");
 
-  // weryfikacja email (case-insensitive; Woo potrafi zwracać różnie)
-  const billingEmail = (order?.billing?.email || "").toLowerCase();
-  if (!billingEmail || !billingEmail.includes(email.toLowerCase().slice(0, 3))) {
-    // miękka weryfikacja – dopuszcza maskowania/aliasy
-    // jeśli chcesz twardą: if (billingEmail !== email.toLowerCase()) return { ok:false, error:"email_mismatch" }
+  // twarda weryfikacja email (case-insensitive)
+  const billingEmail = String(order?.billing?.email || "").toLowerCase();
+  if (billingEmail !== String(email).toLowerCase()) {
+    throw new Error("email_mismatch");
   }
 
-  // mapowanie i maskowanie
   return mapOrder(order);
 }
 
 function readShopCfg(tenant) {
-  const t = String(tenant || "").toUpperCase();
-  const base = process.env[`WOO_${t}_URL`];
-  const key = process.env[`WOO_${t}_KEY`];
-  const secret = process.env[`WOO_${t}_SECRET`];
+  const T = String(tenant || "").toUpperCase();
+  const base = process.env[`WOO_${T}_URL`];
+  const key = process.env[`WOO_${T}_KEY`];
+  const secret = process.env[`WOO_${T}_SECRET`];
   if (!base || !key || !secret) return null;
   return { base: base.replace(/\/+$/, ""), key, secret };
 }
@@ -168,11 +153,11 @@ function mapOrder(o) {
     status: String(o.status || ""),
     currency: o.currency || "",
     totals: {
-      items_total: str(o.total) && str(o.total) !== "0.00" ? str(o.total) : str(sumLineItems(o.line_items)),
+      items_total: String(o.total ?? "0.00"),
       subtotal: o.subtotal || null,
-      shipping: str(o.shipping_total || "0.00"),
-      discount: str(o.discount_total || "0.00"),
-      tax: str(o.total_tax || "0.00")
+      shipping: String(o.shipping_total ?? "0.00"),
+      discount: String(o.discount_total ?? "0.00"),
+      tax: String(o.total_tax ?? "0.00")
     },
     created: o.date_created,
     paid: o.date_paid || null,
@@ -213,24 +198,17 @@ function mapOrder(o) {
       name: li.name,
       sku: li.sku,
       qty: li.quantity,
-      subtotal: str(li.subtotal || "0.00"),
-      total: str(li.total || "0.00"),
-      total_tax: str(li.total_tax || "0.00")
+      subtotal: String(li.subtotal ?? "0.00"),
+      total: String(li.total ?? "0.00"),
+      total_tax: String(li.total_tax ?? "0.00")
     })),
     shipping_lines: (o.shipping_lines || []).map(s => ({
       method_id: s.method_id,
       method_title: s.method_title,
-      total: str(s.total || "0.00"),
-      total_tax: str(s.total_tax || "0.00")
+      total: String(s.total ?? "0.00"),
+      total_tax: String(s.total_tax ?? "0.00")
     })),
-    tracking: [], // opcjonalnie: dołóż jeśli masz wtyczkę
+    tracking: [],
     eta: null
   };
 }
-
-function sumLineItems(items = []) {
-  try {
-    return items.reduce((a, li) => a + parseFloat(li.total || "0"), 0).toFixed(2);
-  } catch { return "0.00"; }
-}
-function str(v) { return v == null ? null : String(v); }
