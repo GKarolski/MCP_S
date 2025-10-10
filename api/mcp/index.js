@@ -2,18 +2,15 @@
 export default function handler(req, res) {
   // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-  if (req.method === 'OPTIONS') {
-    return res.status(204).end();
-  }
-  if (req.method !== 'GET') {
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
     return res.status(405).json({ error: 'method_not_allowed' });
   }
 
-  // Discovery: to samo co zwracasz w /.well-known/mcp
-  res.status(200).json({
+  const body = {
     mcp_version: '1.0',
     tools: [
       {
@@ -33,5 +30,12 @@ export default function handler(req, res) {
         },
       },
     ],
-  });
+  };
+
+  // HEAD – bez ciała
+  if (req.method === 'HEAD') {
+    res.status(200).end();
+  } else {
+    res.status(200).json(body);
+  }
 }
