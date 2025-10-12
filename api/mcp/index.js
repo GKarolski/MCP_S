@@ -65,7 +65,7 @@ export default async function handler(req, res) {
           email: String(email)
         });
 
-        // 🔑 Builder bywa wrażliwy – zwracamy TEXT, nie {type:"json"}
+        // Zwracamy TEXT, żeby Builder stabilnie to łykał
         return send(id, {
           content: [{ type: "text", text: JSON.stringify(result) }],
           isError: false
@@ -90,6 +90,7 @@ export default async function handler(req, res) {
 
 /* -------- helpers -------- */
 function safeJson(s) { try { return JSON.parse(s || "{}"); } catch { return {}; } }
+
 function buildTrackingLink(provider, num) {
   if (!num) return null;
   const p = String(provider || '').toLowerCase();
@@ -166,10 +167,8 @@ async function getOrderDetailsWoo(tenants, { tenant, orderRef, email }) {
     order = (list || []).find(o => String(o.number || o.id) === String(orderRef)) || list?.[0];
     if (!order) throw new Error("order_not_found");
   }
-  // po znalezieniu order:
-  if (!order) throw new Error("order_not_found");
 
-  // 🔁 jeśli przyszedł z listy (często bez meta_data) – dociągnij pełny rekord
+  // Jeśli przyszło z listy bez meta_data – dociągamy pełny rekord
   if (!order.meta_data && order.id) {
     const full = await tryFetch(wcUrl(cfg, `/orders/${order.id}`));
     if (full) order = full;
@@ -194,7 +193,6 @@ function wcUrl(cfg, path, qs = {}) {
 async function mustFetch(url) {
   const r = await fetch(url, {
     headers: { Accept: "application/json" },
-    // ⏱️ twardy timeout, żeby nie wywaliło 424 w Builderze
     signal: AbortSignal.timeout(25000)
   });
   if (!r.ok) throw new Error(`Woo HTTP ${r.status}`);
@@ -215,9 +213,13 @@ function normalizeOrder(o) {
     id: li.id, name: li.name, sku: li.sku, qty: li.quantity,
     subtotal: li.subtotal, total: li.total, total_tax: li.total_tax
   }));
+
   const shipping_lines = (o.shipping_lines || []).map(s => ({
     method_id: s.method_id, method_title: s.method_title, total: s.total, total_tax: s.total_tax
   }));
+
+  const tracking = extractTrackingFromMeta(o.meta_data || []);
+
   return {
     ok: true,
     id: o.id,
@@ -267,7 +269,7 @@ function normalizeOrder(o) {
     },
     items,
     shipping_lines,
-    tracking: [],
+    tracking,
     eta: null
   };
 }
