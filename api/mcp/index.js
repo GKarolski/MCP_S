@@ -90,6 +90,50 @@ export default async function handler(req, res) {
 
 /* -------- helpers -------- */
 function safeJson(s) { try { return JSON.parse(s || "{}"); } catch { return {}; } }
+function buildTrackingLink(provider, num) {
+  if (!num) return null;
+  const p = String(provider || '').toLowerCase();
+  if (p === 'dpd-pl' || p === 'dpd_poland' || p === 'dpd') {
+    return `https://tracktrace.dpd.com.pl/parcelDetails?typ=1&p1=${encodeURIComponent(num)}`;
+  }
+  if (p === 'inpost' || p === 'inpost-paczkomaty') {
+    return `https://inpost.pl/sledzenie-przesylek?number=${encodeURIComponent(num)}`;
+  }
+  return null;
+}
+
+function extractTrackingFromMeta(meta) {
+  const KEYS = new Set([
+    '_wc_shipment_tracking_items',
+    'wc_shipment_tracking_items',
+    '_wc_ast_tracking_items',
+    'wc_ast_tracking_items',
+    '_tracking_items'
+  ]);
+
+  const out = [];
+  for (const m of meta || []) {
+    if (!KEYS.has(m?.key)) continue;
+    let items = m?.value;
+    if (typeof items === 'string') { try { items = JSON.parse(items); } catch {} }
+    if (!Array.isArray(items)) continue;
+
+    for (const it of items) {
+      const num = it?.tracking_number || it?.tracking_id || it?.tracking || it?.number || null;
+      const provider = it?.tracking_provider || it?.provider || it?.slug || it?.courier || null;
+      const link = it?.tracking_link || it?.link || buildTrackingLink(provider, num);
+      const rawDate = it?.date_shipped || it?.date || it?.shipped_date || null;
+
+      let dateISO = null;
+      if (rawDate) {
+        const ts = Number(rawDate);
+        dateISO = Number.isFinite(ts) ? new Date(ts * 1000).toISOString() : new Date(rawDate).toISOString();
+      }
+      out.push({ tracking_number: num, provider, link: link || null, date_shipped: dateISO });
+    }
+  }
+  return out;
+}
 
 function readTenants() {
   const map = {};
