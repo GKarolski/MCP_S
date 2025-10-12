@@ -166,6 +166,14 @@ async function getOrderDetailsWoo(tenants, { tenant, orderRef, email }) {
     order = (list || []).find(o => String(o.number || o.id) === String(orderRef)) || list?.[0];
     if (!order) throw new Error("order_not_found");
   }
+  // po znalezieniu order:
+  if (!order) throw new Error("order_not_found");
+
+  // 🔁 jeśli przyszedł z listy (często bez meta_data) – dociągnij pełny rekord
+  if (!order.meta_data && order.id) {
+    const full = await tryFetch(wcUrl(cfg, `/orders/${order.id}`));
+    if (full) order = full;
+  }
 
   const emails = [order.billing?.email, order.customer_email].filter(Boolean).map(s => String(s).toLowerCase());
   const ok = emails.some(e => e.includes(String(email).toLowerCase()));
